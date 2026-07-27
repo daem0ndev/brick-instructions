@@ -46,6 +46,9 @@ interface Build {
   sections?: SectionMeta[]; // declares section order/titles; optional
   bricks: Brick[];
 }
+type InventoryEntry =
+  | { part: string; color: string; qty: number }
+  | { size: string; kind: string; color: string; qty: number };
 
 const PALETTE: Record<string, string> = {
   red: "#C91A09", blue: "#0055BF", yellow: "#F2CD37", green: "#237841",
@@ -109,6 +112,7 @@ const hexFor = (c: string, bld: Build) =>
   bld.colors?.[c] ?? PALETTE[c] ?? (c.startsWith("#") ? c : "#AAAAAA");
 const sectionId = (b: Brick) => b.section ?? "";
 const sectionTitle = (bld: Build, id: string) => bld.sections?.find((s) => s.id === id)?.title ?? (id || "Build");
+const resolvedPart = (b: Brick) => b.part ?? LDRAW_PART[partKey(b).key];
 
 function sectionOrder(build: Build): string[] {
   const seen = new Set<string>();
@@ -195,7 +199,7 @@ function planOverlap(a: Brick, b: Brick): boolean {
 
 interface Report { errors: string[]; warnings: string[]; }
 
-function validate(build: Build, inventory?: { size: string; kind: string; color: string; qty: number }[]): Report {
+function validate(build: Build, inventory?: InventoryEntry[]): Report {
   const errors: string[] = [], warnings: string[] = [];
   const bricks = build.bricks;
   const name = (b: Brick, i: number) => b.id ?? `#${i + 1}(${partKey(b).dims} ${b.color} @${b.pos.join(",")})`;
@@ -278,6 +282,13 @@ function validate(build: Build, inventory?: { size: string; kind: string; color:
     warnings.push(`large build (${bricks.length} bricks) has no sections defined — consider decomposing per brick-design-guide.md §Large-Scale Decomposition`);
   }
 
+  // Archetype geometry can render without a real part, but purchase-ready and
+  // Studio-ready outputs require every element to resolve to a part number.
+  const unresolved = [...new Set(bricks.filter((b) => !resolvedPart(b)).map((b) => partKey(b).key))].sort();
+  for (const key of unresolved) {
+    warnings.push(`unresolved part: ${key} has no built-in mapping — set an explicit "part" before purchase-ready or Studio-ready delivery`);
+  }
+
   // flat structures: a tall section built entirely from 1-stud-deep bricks is
   // a silhouette wall, not a volume — fine for small motifs, a smell for a
   // hero structure. See brick-design-guide.md §Scale Planning.
@@ -295,14 +306,27 @@ function validate(build: Build, inventory?: { size: string; kind: string; color:
   // inventory
   if (inventory) {
     const need = new Map<string, number>();
-    bricks.forEach((b) => {
-      const p = partKey(b);
-      const k = `${p.dims} ${p.kind} ${b.color}`;
-      need.set(k, (need.get(k) ?? 0) + 1);
-    });
-    for (const [k, n] of need) {
-      const have = inventory.find((e) => `${e.size} ${e.kind} ${e.color}` === k)?.qty ?? 0;
-      if (have < n) errors.push(`inventory: need ${n}× ${k}, have ${have}`);
+    const exactInventory = inventory.some((e) => "part" in e);
+    if (exactInventory) {
+      bricks.forEach((b) => {
+        const part = resolvedPart(b) ?? `UNRESOLVED:${partKey(b).key}`;
+        const k = `${part} ${b.color}`;
+        need.set(k, (need.get(k) ?? 0) + 1);
+      });
+      for (const [k, n] of need) {
+        const have = inventory.find((e) => "part" in e && `${e.part} ${e.color}` === k)?.qty ?? 0;
+        if (have < n) errors.push(`inventory: need ${n}× part ${k}, have ${have}`);
+      }
+    } else {
+      bricks.forEach((b) => {
+        const p = partKey(b);
+        const k = `${p.dims} ${p.kind} ${b.color}`;
+        need.set(k, (need.get(k) ?? 0) + 1);
+      });
+      for (const [k, n] of need) {
+        const have = inventory.find((e) => "size" in e && `${e.size} ${e.kind} ${e.color}` === k)?.qty ?? 0;
+        if (have < n) errors.push(`inventory: need ${n}× ${k}, have ${have}`);
+      }
     }
   }
   return { errors, warnings };
@@ -484,13 +508,21 @@ function buildHTML(build: Build): string {
     defs += `<g id="sg${s}">${sortedBricks(list).map((b) => brickSVG(b, build, false, false)).join("")}</g>`;
   }
 
-  const bom = new Map<string, { size: Vec3; color: string; shape: Shape; label: string; qty: number }>();
+  const bom = new Map<string, { size: Vec3; color: string; shape: Shape; label: string; part?: string; qty: number }>();
   for (const b of bricks) {
     const p = partKey(b);
-    const k = `${p.key} ${b.color}`;
+    const part = resolvedPart(b);
+    const k = `${part ?? `UNRESOLVED:${p.key}`} ${b.color}`;
     const e = bom.get(k);
     if (e) e.qty++;
-    else bom.set(k, { size: [Math.min(b.size[0], b.size[1]), Math.max(b.size[0], b.size[1]), b.size[2]], color: b.color, shape: shapeOf(b), label: `${p.dims} ${p.kind}`, qty: 1 });
+    else bom.set(k, {
+      size: [Math.min(b.size[0], b.size[1]), Math.max(b.size[0], b.size[1]), b.size[2]],
+      color: b.color,
+      shape: shapeOf(b),
+      label: `${part ? `part ${part} — ` : "unresolved — "}${p.dims} ${p.kind}`,
+      part,
+      qty: 1,
+    });
   }
   const bomHTML = [...bom.values()]
     .sort((a, b) => b.size[2] - a.size[2] || b.size[0] * b.size[1] - a.size[0] * a.size[1])
@@ -634,7 +666,7 @@ function buildLDR(build: Build): string {
   const lines = [`0 ${build.title}`, `0 Name: ${build.title.replace(/\s+/g, "_")}.ldr`, `0 Author: ${build.author ?? "brick-instructions"}`, `0 BFC CERTIFY CCW`];
   for (const b of build.bricks) {
     const p = partKey(b);
-    const part = b.part ?? LDRAW_PART[p.key];
+    const part = resolvedPart(b);
     if (!part) { lines.push(`0 // WARNING: no LDraw part mapping for ${p.key} (${b.color}) — set an explicit "part" on this brick`); continue; }
     const { w, d } = fp(b);
     const color = LDRAW_COLOR[b.color] ?? 7;

@@ -27,7 +27,7 @@ git clone https://github.com/daem0ndev/brick-instructions-skill
 ## Local use (Bun or Python)
 
 ```bash
-# validate (collisions, floating bricks, build order, flat structures, inventory)
+# validate (collisions, floating bricks, build order, flat structures, unresolved parts, inventory)
 bun scripts/render-instructions.ts validate build.json [--inventory inv.json]
 python3 scripts/render_instructions.py validate build.json
 
@@ -92,6 +92,8 @@ Every model below went through the full skill pipeline — designed as `build.js
 - **Adaptive pacing** — 8 pieces per step for small builds, 16 above 300, 24 above 1,000, matching how real LEGO booklets pace bigger sets.
 - **Scale discipline** — the design guide requires computing true minifig-scale size from the subject's real dimensions and asking the user to choose a tier, instead of silently shipping a toy-sized model; a validator warning flags tall structures built as 1-stud-deep flat walls.
 - **Physical honesty** — validation implements the connectivity heuristic from CMU's [BrickGPT](https://github.com/AvaLovelace1/BrickGPT) (ICCV 2025 Best Paper): every brick must trace support to the ground, steps must be buildable in order, and inventory constraints are hard errors.
+- **Production workflow** — purchase-ready and Studio-ready requests capture acceptance criteria, plan structural modules and service access, use intentional steps, resolve exact parts, and report which claims remain approximate.
+- **Exact-part BOMs** — booklets group parts by resolved BrickLink/LDraw part number and color. Inventory validation accepts exact entries such as `{"part":"3001","color":"red","qty":12}` while retaining the legacy size/kind format.
 
 ## Repo layout
 
@@ -100,7 +102,7 @@ Every model below went through the full skill pipeline — designed as `build.js
 | `SKILL.md` | The skill definition — workflow, schema, scale tiers, quality bar |
 | `scripts/render-instructions.ts` | Bun/TypeScript renderer (HTML, validate, LDraw) |
 | `scripts/render_instructions.py` | Pure-stdlib Python port (adds native PDF; runs in sandboxed interpreters) |
-| `references/` | Design guide, BrickLink part registry, ChatGPT project setup |
+| `references/` | Design guide, production workflow, BrickLink part registry, ChatGPT project setup |
 | `assets/` | Starter build files (duck, 192-piece hotel), inventory format, gallery images |
 | `examples/` | Gallery + Rockwater generators and build.json files |
 | `examples/outputs/` | Finished instruction PDFs for every example |

@@ -137,6 +137,10 @@ def part_key(b):
         kind = s  # tile, slope, panel, window, foliage
     return f"{a}x{c}", kind, f"{s}:{a}x{c}-{h}"
 
+def resolved_part(b):
+    """Return the explicit or built-in LDraw/BrickLink part number, if known."""
+    return b.get("part") or LDRAW_PART.get(part_key(b)[2])
+
 def ensure_steps(build):
     """Auto-step per section (never mixes two sections into one step),
     continuing the global step counter across sections. If every brick
@@ -239,6 +243,12 @@ def validate(build, inventory=None):
     if len(bricks) > LARGE_BUILD_THRESHOLD and len(section_order(build)) <= 1:
         warnings.append("large build (%d bricks) has no sections defined - consider decomposing per brick-design-guide.md section Large-Scale Decomposition" % len(bricks))
 
+    # Exact-part readiness: archetype geometry without an LDraw/BrickLink part
+    # can render, but cannot produce a complete BOM or Studio-ready .ldr file.
+    unresolved = sorted(set(part_key(b)[2] for b in bricks if not resolved_part(b)))
+    for key in unresolved:
+        warnings.append('unresolved part: %s has no built-in mapping - set an explicit "part" before purchase-ready or Studio-ready delivery' % key)
+
     # flat structures: a tall section built entirely from 1-stud-deep bricks is
     # a silhouette wall, not a volume - see brick-design-guide.md Scale Planning.
     for sec_id in section_order(build):
@@ -253,14 +263,25 @@ def validate(build, inventory=None):
 
     if inventory is not None:
         need = {}
-        for b in bricks:
-            dims, kind, _ = part_key(b)
-            k = "%s %s %s" % (dims, kind, b["color"])
-            need[k] = need.get(k, 0) + 1
-        for k, n in need.items():
-            have = next((e["qty"] for e in inventory if "%s %s %s" % (e["size"], e["kind"], e["color"]) == k), 0)
-            if have < n:
-                errors.append("inventory: need %dx %s, have %d" % (n, k, have))
+        exact_inventory = any(e.get("part") for e in inventory)
+        if exact_inventory:
+            for b in bricks:
+                part = resolved_part(b) or "UNRESOLVED:%s" % part_key(b)[2]
+                k = "%s %s" % (part, b["color"])
+                need[k] = need.get(k, 0) + 1
+            for k, n in need.items():
+                have = next((e["qty"] for e in inventory if "%s %s" % (e.get("part"), e["color"]) == k), 0)
+                if have < n:
+                    errors.append("inventory: need %dx part %s, have %d" % (n, k, have))
+        else:
+            for b in bricks:
+                dims, kind, _ = part_key(b)
+                k = "%s %s %s" % (dims, kind, b["color"])
+                need[k] = need.get(k, 0) + 1
+            for k, n in need.items():
+                have = next((e["qty"] for e in inventory if "%s %s %s" % (e["size"], e["kind"], e["color"]) == k), 0)
+                if have < n:
+                    errors.append("inventory: need %dx %s, have %d" % (n, k, have))
     return errors, warnings
 
 # ---------- shared geometry ----------
@@ -453,13 +474,15 @@ def agg_parts(bricks):
     agg = {}
     for b in bricks:
         dims, kind, key = part_key(b)
-        k = "%s %s" % (key, b["color"])
+        part = resolved_part(b)
+        k = "%s %s" % (part or "UNRESOLVED:%s" % key, b["color"])
         if k in agg:
             agg[k]["qty"] += 1
         else:
             a, c = sorted(b["size"][:2])
             agg[k] = {"size": (a, c, b["size"][2]), "color": b["color"], "shape": shape_of(b),
-                      "label": "%s %s" % (dims, kind), "qty": 1}
+                      "label": "%s%s %s" % (("part %s - " % part) if part else "unresolved - ", dims, kind),
+                      "part": part, "qty": 1}
     return sorted(agg.values(), key=lambda e: (-e["size"][2], -e["size"][0] * e["size"][1]))
 
 def build_html(build):
@@ -892,7 +915,7 @@ def build_ldr(build):
              "0 Author: %s" % build.get("author", "brick-instructions"), "0 BFC CERTIFY CCW"]
     for b in build["bricks"]:
         _, _, key = part_key(b)
-        part = b.get("part") or LDRAW_PART.get(key)
+        part = resolved_part(b)
         if not part:
             lines.append("0 // WARNING: no LDraw part mapping for %s (%s) - set an explicit \"part\" on this brick" % (key, b["color"]))
             continue
